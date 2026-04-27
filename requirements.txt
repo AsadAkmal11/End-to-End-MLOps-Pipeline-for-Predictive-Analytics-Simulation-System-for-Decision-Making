@@ -9,3 +9,5 @@ numpy
 streamlit>=1.32.0
 plotly>=5.20.0
 xgboost>=2.0.0
+statsmodels
+matplotlib

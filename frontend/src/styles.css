@@ -1,0 +1,174 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(circle at 20% 20%, #1f3b77 0%, #081226 42%, #05080f 100%);
+  color: #e5e7eb;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.dashboard {
+  display: grid;
+  grid-template-columns: 420px 1fr;
+  min-height: 100vh;
+  gap: 14px;
+  padding: 14px;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.glass {
+  background: linear-gradient(135deg, rgba(22, 28, 45, 0.8), rgba(8, 10, 20, 0.78));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.35);
+}
+
+.panel {
+  border-radius: 18px;
+  padding: 18px 18px;
+}
+
+.panel h1 {
+  margin: 0 0 8px;
+  font-size: 1.6rem;
+}
+
+.muted {
+  color: #a5b4fc;
+  font-size: 0.95rem;
+}
+
+.metrics h2 {
+  margin-top: 0;
+  margin-bottom: 14px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.metric-card {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.metric-card span {
+  color: #9ca3af;
+  font-size: 0.8rem;
+  display: block;
+}
+
+.metric-card strong {
+  font-size: 1rem;
+  color: #e0f2fe;
+}
+
+.recommendation {
+  background: rgba(111, 76, 255, 0.12);
+  border-radius: 12px;
+  padding: 12px;
+  border: 1px solid rgba(111, 76, 255, 0.35);
+}
+
+.recommendation h3,
+.chart-wrap h3 {
+  margin: 0 0 8px;
+}
+
+.recommendation p {
+  margin: 6px 0;
+  line-height: 1.4;
+}
+
+.chart-wrap {
+  margin-top: 14px;
+}
+
+.chart-container {
+  height: 240px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.map-area {
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.35);
+}
+
+.map {
+  height: calc(100vh - 28px);
+  width: 100%;
+}
+
+.spinner-wrap {
+  text-align: center;
+  padding: 32px 0;
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #22d3ee;
+  margin: 0 auto 10px;
+  animation: spin 0.8s linear infinite;
+}
+
+.error-box {
+  background: rgba(220, 38, 38, 0.14);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  color: #fecaca;
+  padding: 10px;
+  border-radius: 10px;
+}
+
+.transition {
+  transition: all 0.35s ease;
+}
+
+.dimmed {
+  opacity: 0.82;
+  transform: translateY(1px);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 1100px) {
+  .dashboard {
+    grid-template-columns: 1fr;
+  }
+
+  .map {
+    height: 55vh;
+  }
+}

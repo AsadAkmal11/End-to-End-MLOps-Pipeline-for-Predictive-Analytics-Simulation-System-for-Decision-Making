@@ -5,6 +5,7 @@ train/test split, and write a single processed dataset CSV.
 Usage:
     python src/preprocess.py
     python src/preprocess.py --csv data/Crop_recommendation.csv --target label
+    python src/preprocess.py --csv data/crop_yield_dataset.csv --target Crop_Yield --regression --drop-cols Date
 """
 
 from __future__ import annotations
@@ -29,6 +30,10 @@ OUTPUT_PATH = Path("data") / "processed_data.csv"
 
 
 def _configure_logging(level: int = logging.INFO) -> None:
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, OSError):
+        pass
     root = logging.getLogger()
     if root.handlers:
         root.setLevel(level)
@@ -124,8 +129,24 @@ def preprocess_and_save(
     target_column: str,
     test_size: float,
     random_state: int,
+    *,
+    regression: bool = False,
+    drop_columns: Sequence[str] | None = None,
+    max_rows: int | None = None,
 ) -> Path:
     df = load_csv(csv_path)
+    if max_rows is not None and max_rows > 0 and len(df) > max_rows:
+        df = df.sample(n=max_rows, random_state=random_state).reset_index(drop=True)
+        LOG.info("Subsampled to max_rows=%d (shape=%s)", max_rows, df.shape)
+
+    drop_columns = list(drop_columns or [])
+    if drop_columns:
+        missing = [c for c in drop_columns if c not in df.columns]
+        if missing:
+            raise ValueError(f"--drop-cols: unknown columns: {missing}")
+        df = df.drop(columns=drop_columns)
+        LOG.info("Dropped columns: %s", drop_columns)
+
     numerical, categorical = infer_feature_columns(df, target_column)
 
     missing_before = df.isna().sum().sum()
@@ -137,12 +158,16 @@ def preprocess_and_save(
     X = df.drop(columns=[target_column])
     y = df[target_column]
 
+    stratify = None
+    if not regression and y.nunique() > 1 and not pd.api.types.is_float_dtype(y):
+        stratify = y
+
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
         test_size=test_size,
         random_state=random_state,
-        stratify=y if y.nunique() > 1 else None,
+        stratify=stratify,
     )
     LOG.info(
         "Train/test split: train=%d, test=%d (test_size=%.2f)",
@@ -163,27 +188,29 @@ def preprocess_and_save(
         X.shape[1],
     )
 
-    le = LabelEncoder()
-    y_encoded = le.fit_transform(pd.concat([y_train, y_test], axis=0))
-    # Align back to train/test order
-    n_train = len(y_train)
-    y_train_enc = y_encoded[:n_train]
-    y_test_enc = y_encoded[n_train:]
-    LOG.info(
-        "Target encoded with LabelEncoder (%d classes): %s",
-        len(le.classes_),
-        list(le.classes_),
-    )
-
     train_part = X_train_t.copy()
     train_part["dataset_split"] = "train"
     train_part[target_column] = y_train.values
-    train_part[f"{target_column}_encoded"] = y_train_enc
 
     test_part = X_test_t.copy()
     test_part["dataset_split"] = "test"
     test_part[target_column] = y_test.values
-    test_part[f"{target_column}_encoded"] = y_test_enc
+
+    if regression:
+        LOG.info("Regression target: keeping %s as numeric (no LabelEncoder)", target_column)
+    else:
+        le = LabelEncoder()
+        y_encoded = le.fit_transform(pd.concat([y_train, y_test], axis=0))
+        n_train = len(y_train)
+        y_train_enc = y_encoded[:n_train]
+        y_test_enc = y_encoded[n_train:]
+        LOG.info(
+            "Target encoded with LabelEncoder (%d classes): %s",
+            len(le.classes_),
+            list(le.classes_),
+        )
+        train_part[f"{target_column}_encoded"] = y_train_enc
+        test_part[f"{target_column}_encoded"] = y_test_enc
 
     processed = pd.concat([train_part, test_part], axis=0, ignore_index=True)
 
@@ -225,18 +252,39 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         default=42,
         help="Random seed for splitting (default: 42)",
     )
+    p.add_argument(
+        "--regression",
+        action="store_true",
+        help="Continuous target: no LabelEncoder; no stratified split",
+    )
+    p.add_argument(
+        "--drop-cols",
+        type=str,
+        default="",
+        help="Comma-separated columns to drop before preprocessing (e.g. Date)",
+    )
+    p.add_argument(
+        "--max-rows",
+        type=int,
+        default=0,
+        help="If >0, randomly sample this many rows before preprocessing",
+    )
     return p.parse_args(list(argv) if argv is not None else None)
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     _configure_logging()
     args = parse_args(argv)
+    drop_cols = [c.strip() for c in args.drop_cols.split(",") if c.strip()]
     preprocess_and_save(
         csv_path=args.csv,
         output_path=args.output,
         target_column=args.target,
         test_size=args.test_size,
         random_state=args.random_state,
+        regression=args.regression,
+        drop_columns=drop_cols,
+        max_rows=args.max_rows if args.max_rows > 0 else None,
     )
     return 0
 
