@@ -1,11 +1,16 @@
 fastapi
 uvicorn
+httpx
+prefect
+deepchecks; python_version < "3.13"
+setuptools<81
 pandas
-scikit-learn
+scikit-learn<1.8
 pytest
 flake8
 joblib
-numpy
+numpy<2.0; python_version < "3.13"
+numpy; python_version >= "3.13"
 streamlit>=1.32.0
 plotly>=5.20.0
 xgboost>=2.0.0

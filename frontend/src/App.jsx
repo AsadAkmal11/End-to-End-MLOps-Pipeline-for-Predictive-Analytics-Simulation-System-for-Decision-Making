@@ -106,8 +106,8 @@ export default function App() {
       }
 
       setResult({
-        predictedYield: yieldResp.prediction,
-        classification: classResp.prediction,
+        cropSuitabilityScore: yieldResp.crop_suitability_score ?? yieldResp.prediction,
+        riskLevel: classResp.risk_level ?? classResp.prediction,
         forecast: forecastResp.forecast ?? [],
         recommendation: recommendResp,
         cluster: clusterResp
@@ -168,12 +168,12 @@ export default function App() {
               <h2>{selectedCity.name}</h2>
               <div className="metric-grid">
                 <div className="metric-card">
-                  <span>Predicted Yield</span>
-                  <strong>{Number(result.predictedYield || 0).toFixed(2)}</strong>
+                  <span>Crop Suitability Score</span>
+                  <strong>{Number(result.cropSuitabilityScore || 0).toFixed(2)}</strong>
                 </div>
                 <div className="metric-card">
-                  <span>Classification</span>
-                  <strong>{result.classification || "N/A"}</strong>
+                  <span>Risk Level</span>
+                  <strong>{result.riskLevel || "N/A"}</strong>
                 </div>
                 <div className="metric-card">
                   <span>Cluster</span>

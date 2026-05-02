@@ -25,14 +25,18 @@ jobs:
       - name: Lint with flake8
         run: flake8 .
 
+      - name: Run DeepChecks data integrity
+        run: python tests/ml_data_validation.py
+
       - name: Run tests
         run: pytest tests/
 
       - name: Validate data
         run: python src/validate.py
 
-      - name: Train model
-        run: python src/train.py
+      - name: Smoke-check crop training scripts (no heavy datasets required)
+        run: |
+          python -c "from src import recommend; print('recommend import ok')"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

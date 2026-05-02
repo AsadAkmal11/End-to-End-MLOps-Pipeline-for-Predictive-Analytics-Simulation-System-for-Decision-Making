@@ -1,36 +1,65 @@
 """
-Unit tests for the CI/CD pipeline.
-Ensures generation of model and a successful dummy inference.
+System/integration checks for the crop/agri FastAPI.
+
+These tests validate the live contract used by the React dashboard:
+  - /predict-yield
+  - /classify-yield (artifact optional; has fallback)
+  - /forecast (artifact optional; has fallback)
+  - /cluster
+  - /recommend
 """
 
-import os
-import pandas as pd
-import joblib
+from fastapi.testclient import TestClient
+
+from app.main import app
 
 
-def test_model_exists():
-    """Ensure that the trained model file is generated and exists."""
-    model_path = os.path.join("models", "cricket_model.pkl")
-    assert os.path.exists(model_path), "Model not found. Run train.py first."
+client = TestClient(app)
 
 
-def test_dummy_inference():
-    """Test that the model accepts input shape and outputs probability."""
-    model_path = os.path.join("models", "cricket_model.pkl")
+def test_root_health():
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.json().get("message") == "ML API running"
 
-    # Only test inference if model generation didn't fail
-    if os.path.exists(model_path):
-        model = joblib.load(model_path)
 
-        dummy_data = pd.DataFrame([{
-            "team1": "Australia",
-            "team2": "South Africa",
-            "venue": "Melbourne Cricket Ground",
-            "toss_winner": "Australia"
-        }])
+def test_predict_yield():
+    payload = {"features": {"rainfall": 200, "temperature": 22, "N": 90, "P": 40, "K": 43}}
+    r = client.post("/predict-yield", json=payload)
+    assert r.status_code == 200
+    body = r.json()
+    assert "prediction" in body
 
-        pred = model.predict(dummy_data)
-        probs = model.predict_proba(dummy_data)
 
-        assert len(pred) == 1
-        assert len(probs[0]) == 2
+def test_classify_yield():
+    payload = {"features": {"rainfall": 200, "temperature": 22, "N": 90, "P": 40, "K": 43}}
+    r = client.post("/classify-yield", json=payload)
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("prediction") in {"low", "medium", "high"}
+    assert "source" in body
+
+
+def test_forecast_fallback():
+    r = client.post("/forecast", json={"periods": 6})
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("periods") == 6
+    assert isinstance(body.get("forecast"), list)
+    assert len(body["forecast"]) == 6
+
+
+def test_cluster():
+    payload = {"samples": [{"rainfall": 200, "temperature": 22, "N": 90, "P": 40, "K": 43}]}
+    r = client.post("/cluster", json=payload)
+    assert r.status_code == 200
+    body = r.json()
+    assert "clusters" in body
+
+
+def test_recommend():
+    payload = {"N": 90, "P": 42, "K": 43, "rainfall": 200, "temperature": 21}
+    r = client.post("/recommend", json=payload)
+    assert r.status_code == 200
+    body = r.json()
+    assert "best_crop" in body

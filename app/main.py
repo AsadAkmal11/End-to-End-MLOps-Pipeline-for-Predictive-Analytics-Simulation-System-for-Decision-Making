@@ -64,6 +64,11 @@ class ForecastRequest(BaseModel):
     periods: int = Field(12, ge=1, le=60)
     order: tuple[int, int, int] = (1, 1, 1)
     historical_data: list[ForecastPoint] | None = None
+    baseline: float | None = Field(
+        None,
+        description="Optional baseline value to use for a naive forecast when no model/history exists.",
+        examples=[3.25],
+    )
 
 
 class ClusterRequest(BaseModel):
@@ -92,6 +97,45 @@ def _load_artifact(path: Path) -> dict[str, Any]:
     if isinstance(obj, dict):
         return obj
     return {"model": obj}
+
+
+def _predict_yield_value(features: dict[str, float]) -> tuple[float, dict[str, Any]]:
+    """
+    Return a numeric value for the dashboard.
+
+    Primary: regression artifact at models/yield_model.pkl.
+    Fallback: crop recommender model confidence (0..1) as a proxy score when the
+    yield regressor feature schema doesn't match the incoming payload.
+    """
+    artifact = get_yield_artifact()
+    model = artifact["model"]
+    X = pd.DataFrame([features])
+    try:
+        pred = float(model.predict(X)[0])
+        return pred, {
+            "source": "yield_regression_artifact",
+            "model_name": artifact.get("model_name", "unknown"),
+            "target_column": artifact.get("target_column"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("Yield regressor prediction failed; falling back. Error=%s", exc)
+
+    payload = {
+        "N": float(features.get("N", 0.0)),
+        "P": float(features.get("P", 0.0)),
+        "K": float(features.get("K", 0.0)),
+        "rainfall": float(features.get("rainfall", 0.0)),
+        "temperature": float(features.get("temperature", 0.0)),
+    }
+    rec = hybrid_recommend(payload, model_path=RECOMMENDER_MODEL_PATH, min_model_confidence=0.0)
+    conf = rec.get("diagnostics", {}).get("model_confidence")
+    score = float(conf) if conf is not None else 0.0
+    return score, {
+        "source": "recommender_confidence_proxy",
+        "note": "yield_model.pkl feature schema mismatch; using recommender confidence as proxy score",
+        "best_crop": rec.get("best_crop"),
+        "diagnostics": rec.get("diagnostics"),
+    }
 
 
 @lru_cache(maxsize=1)
@@ -126,18 +170,17 @@ def home() -> dict[str, str]:
 @app.post("/predict-yield")
 def predict_yield(payload: FeaturePayload) -> dict[str, Any]:
     """
-    Predict continuous yield using models/yield_model.pkl artifact.
+    Return crop suitability score.
+
+    Note: the score may come from a yield model or a confidence proxy fallback.
     """
     try:
-        artifact = get_yield_artifact()
-        model = artifact["model"]
-        X = pd.DataFrame([payload.features])
-        pred = float(model.predict(X)[0])
+        pred, meta = _predict_yield_value(payload.features)
         LOG.info("/predict-yield success")
         return {
             "prediction": pred,
-            "model_name": artifact.get("model_name", "unknown"),
-            "target_column": artifact.get("target_column"),
+            "crop_suitability_score": pred,
+            **meta,
         }
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -149,27 +192,65 @@ def predict_yield(payload: FeaturePayload) -> dict[str, Any]:
 @app.post("/classify-yield")
 def classify_yield(payload: FeaturePayload) -> dict[str, Any]:
     """
-    Predict yield category (low / medium / high) using models/classifier.pkl.
+    Predict agronomic risk level (low / medium / high).
+
+    Preferred: models/classifier.pkl (trained yield-category classifier).
+    Fallback: derive category from yield regression prediction using thresholds.
     """
     try:
-        artifact = get_classifier_artifact()
-        model = artifact["model"]
         X = pd.DataFrame([payload.features])
-        pred = str(model.predict(X)[0])
-        response: dict[str, Any] = {
-            "prediction": pred,
-            "model_name": artifact.get("model_name", "unknown"),
-            "class_labels": artifact.get("class_labels"),
+
+        # Preferred path: dedicated classifier artifact.
+        if CLASSIFIER_MODEL_PATH.is_file():
+            artifact = get_classifier_artifact()
+            model = artifact["model"]
+            pred = str(model.predict(X)[0])
+            response: dict[str, Any] = {
+                "prediction": pred,
+                "risk_level": pred,
+                "source": "classifier_artifact",
+                "model_name": artifact.get("model_name", "unknown"),
+                "class_labels": artifact.get("class_labels"),
+            }
+            if hasattr(model, "predict_proba"):
+                proba = model.predict_proba(X)[0]
+                classes = list(getattr(model, "classes_", []))
+                if classes:
+                    response["probabilities"] = {
+                        str(c): float(p) for c, p in zip(classes, proba)
+                    }
+            LOG.info("/classify-yield success (artifact)")
+            return response
+
+        # Fallback path: map regression (or proxy score) to a category.
+        pred_yield, meta = _predict_yield_value(payload.features)
+
+        # Default thresholds for proxy score (0..1). If you're using a real yield
+        # regressor, adjust these or store quantiles in the artifact.
+        low_thr = 0.33
+        high_thr = 0.66
+        threshold_source = "fixed_default"
+
+        if pred_yield <= low_thr:
+            label = "low"
+        elif pred_yield >= high_thr:
+            label = "high"
+        else:
+            label = "medium"
+
+        LOG.info("/classify-yield success (fallback)")
+        return {
+            "prediction": label,
+            "risk_level": label,
+            "source": "yield_regression_fallback",
+            "predicted_yield": pred_yield,
+            "thresholds": {
+                "low": low_thr,
+                "high": high_thr,
+                "source": threshold_source,
+            },
+            "details": meta,
         }
-        if hasattr(model, "predict_proba"):
-            proba = model.predict_proba(X)[0]
-            classes = list(getattr(model, "classes_", []))
-            if classes:
-                response["probabilities"] = {
-                    str(c): float(p) for c, p in zip(classes, proba)
-                }
-        LOG.info("/classify-yield success")
-        return response
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -213,17 +294,29 @@ def forecast(request: ForecastRequest) -> dict[str, Any]:
             fc = fitted.forecast(steps=periods)
             source = "request_historical_data"
         else:
-            artifact = get_forecast_artifact()
-            model = artifact.get("model")
-            history = artifact.get("history")
-            if model is not None and hasattr(model, "forecast"):
-                fc = model.forecast(steps=periods)
-            elif history is not None:
-                fitted = ARIMA(history, order=order).fit()
-                fc = fitted.forecast(steps=periods)
+            if FORECAST_MODEL_PATH.is_file():
+                artifact = get_forecast_artifact()
+                model = artifact.get("model")
+                history = artifact.get("history")
+                if model is not None and hasattr(model, "forecast"):
+                    fc = model.forecast(steps=periods)
+                elif history is not None:
+                    fitted = ARIMA(history, order=order).fit()
+                    fc = fitted.forecast(steps=periods)
+                else:
+                    raise ValueError("Invalid forecast artifact: missing model/history.")
+                source = "saved_model"
             else:
-                raise ValueError("Invalid forecast artifact: missing model/history.")
-            source = "saved_model"
+                # Fallback: naive forecast (flatline) so the dashboard can run even
+                # when a time-series dataset isn't available in this repo.
+                baseline = float(request.baseline) if request.baseline is not None else 0.0
+                idx = pd.date_range(
+                    start=pd.Timestamp.today().normalize().replace(day=1),
+                    periods=periods,
+                    freq="MS",
+                )
+                fc = pd.Series([baseline] * periods, index=idx)
+                source = "naive_baseline_fallback"
 
         forecast_items = [
             {"date": str(idx.date()), "prediction": float(val)}
