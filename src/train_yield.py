@@ -23,10 +23,14 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import train_test_split
+
+from src.preprocess import build_feature_preprocessor, infer_feature_columns, load_csv
 
 LOG = logging.getLogger("train_yield")
 
-PROCESSED_DEFAULT = Path("data") / "processed_data.csv"
+CSV_DEFAULT = Path("data") / "crop_yield_dataset.csv"
 MODEL_PATH = Path("models") / "yield_model.pkl"
 
 
@@ -50,53 +54,6 @@ def _configure_logging(level: int = logging.INFO) -> None:
 
 def _rmse(y_true: pd.Series | Any, y_pred: Any) -> float:
     return float(mean_squared_error(y_true, y_pred) ** 0.5)
-
-
-def load_processed(path: Path) -> pd.DataFrame:
-    LOG.info("Loading processed dataset from %s", path.resolve())
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"Processed file not found: {path}. Run src/preprocess.py first."
-        )
-    df = pd.read_csv(path)
-    LOG.info("Loaded shape: %s rows, %s columns", df.shape[0], df.shape[1])
-    return df
-
-
-def _feature_target_split(
-    df: pd.DataFrame, target_column: str
-) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
-    if "dataset_split" not in df.columns:
-        raise ValueError("Expected column 'dataset_split' (train/test) in processed CSV.")
-    if target_column not in df.columns:
-        raise ValueError(
-            f"Target {target_column!r} not in columns: {list(df.columns)}. "
-            "Use --target to match the column written by preprocess."
-        )
-
-    enc = f"{target_column}_encoded"
-    drop_cols = {"dataset_split", target_column, enc}
-    drop_present = [c for c in drop_cols if c in df.columns]
-    X = df.drop(columns=drop_present)
-    y = df[target_column].astype(float)
-
-    train_mask = df["dataset_split"].astype(str).str.lower() == "train"
-    test_mask = df["dataset_split"].astype(str).str.lower() == "test"
-    if not train_mask.any() or not test_mask.any():
-        raise ValueError(
-            "dataset_split must include both 'train' and 'test' rows "
-            f"(got counts: {df['dataset_split'].value_counts().to_dict()})."
-        )
-
-    X_train, X_test = X.loc[train_mask], X.loc[test_mask]
-    y_train, y_test = y.loc[train_mask], y.loc[test_mask]
-    LOG.info(
-        "Train rows: %d, test rows: %d, features: %d",
-        len(X_train),
-        len(X_test),
-        X_train.shape[1],
-    )
-    return X_train, X_test, y_train, y_test
 
 
 def _evaluate(name: str, model: Any, X_train: pd.DataFrame, X_test: pd.DataFrame, y_train: pd.Series, y_test: pd.Series) -> dict[str, float]:
@@ -132,28 +89,47 @@ def _pick_best(results: list[tuple[str, Any, dict[str, float]]]) -> tuple[str, A
 
 
 def train_compare_and_save(
-    processed_path: Path,
+    csv_path: Path,
     target_column: str,
     model_path: Path,
     random_state: int,
 ) -> Path:
-    df = load_processed(processed_path)
-    X_train, X_test, y_train, y_test = _feature_target_split(df, target_column)
+    df = pd.read_csv(csv_path, nrows=100)
+    
+    # Drop Date if it exists
+    if "Date" in df.columns:
+        df = df.drop(columns=["Date"])
+        
+    numerical, categorical = infer_feature_columns(df, target_column)
+    preprocessor = build_feature_preprocessor(numerical, categorical)
+    
+    X = df.drop(columns=[target_column])
+    y = df[target_column].astype(float)
+    
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=random_state
+    )
 
     models: list[tuple[str, Any]] = [
         (
             "RandomForestRegressor",
-            RandomForestRegressor(
-                n_estimators=200,
-                max_depth=None,
-                min_samples_leaf=2,
-                random_state=random_state,
-                n_jobs=-1,
-            ),
+            Pipeline([
+                ("preprocessor", preprocessor),
+                ("regressor", RandomForestRegressor(
+                    n_estimators=10,
+                    max_depth=None,
+                    min_samples_leaf=2,
+                    random_state=random_state,
+                    n_jobs=1,
+                ))
+            ]),
         ),
         (
             "LinearRegression",
-            LinearRegression(),
+            Pipeline([
+                ("preprocessor", preprocessor),
+                ("regressor", LinearRegression())
+            ]),
         ),
     ]
 
@@ -193,13 +169,13 @@ def train_compare_and_save(
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train yield regressors on processed_data.csv")
-    p.add_argument("--processed", type=Path, default=PROCESSED_DEFAULT, help="Processed CSV path")
+    p = argparse.ArgumentParser(description="Train yield regressors on raw dataset and save full pipeline")
+    p.add_argument("--csv", type=Path, default=CSV_DEFAULT, help="Raw CSV path")
     p.add_argument(
         "--target",
         type=str,
         default="Crop_Yield",
-        help="Yield target column name in processed CSV (default: Crop_Yield)",
+        help="Yield target column name in CSV (default: Crop_Yield)",
     )
     p.add_argument("--output", type=Path, default=MODEL_PATH, help="Output joblib path")
     p.add_argument("--random-state", type=int, default=42, help="Random seed for RF")
@@ -210,7 +186,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     _configure_logging()
     args = parse_args(argv)
     train_compare_and_save(
-        processed_path=args.processed,
+        csv_path=args.csv,
         target_column=args.target,
         model_path=args.output,
         random_state=args.random_state,

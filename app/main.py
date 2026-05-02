@@ -51,10 +51,10 @@ METRICS_HISTORY_PATH = MODELS_DIR / "metrics_history.json"
 
 
 class FeaturePayload(BaseModel):
-    features: dict[str, float] = Field(
+    features: dict[str, Any] = Field(
         ...,
         description="Feature dictionary expected by the stored model",
-        example={"num__Soil_pH": 6.5, "num__Temperature": 24.1},
+        example={"Soil_pH": 6.5, "Temperature": 24.1, "Crop_Type": "Wheat"},
     )
 
 
@@ -103,7 +103,7 @@ def _load_artifact(path: Path) -> dict[str, Any]:
     return {"model": obj}
 
 
-def _predict_yield_value(features: dict[str, float]) -> tuple[float, dict[str, Any]]:
+def _predict_yield_value(features: dict[str, Any]) -> tuple[float, dict[str, Any]]:
     """
     Return a numeric value for the dashboard.
 
@@ -113,7 +113,44 @@ def _predict_yield_value(features: dict[str, float]) -> tuple[float, dict[str, A
     """
     artifact = get_yield_artifact()
     model = artifact["model"]
+    
+    # Create single-row DataFrame
     X = pd.DataFrame([features])
+    
+    # Map frontend payload keys to expected pipeline column names
+    rename_map = {
+        "temperature": "Temperature",
+        "rainfall": "Humidity",  # using rainfall as a proxy for humidity if missing
+        "ph": "Soil_pH",
+    }
+    X = X.rename(columns=rename_map)
+    
+    expected_cols = [
+        "Crop_Type", "Soil_Type", "Soil_pH", "Temperature", 
+        "Humidity", "Wind_Speed", "N", "P", "K", "Soil_Quality"
+    ]
+    
+    # Fill missing columns with sensible defaults so the pipeline can transform them
+    defaults = {
+        "Crop_Type": "Wheat",
+        "Soil_Type": "Loamy",
+        "Soil_pH": 6.5,
+        "Temperature": 25.0,
+        "Humidity": 60.0,
+        "Wind_Speed": 5.0,
+        "N": 50.0,
+        "P": 50.0,
+        "K": 50.0,
+        "Soil_Quality": 50.0
+    }
+    
+    for col in expected_cols:
+        if col not in X.columns:
+            X[col] = defaults[col]
+            
+    # Ensure correct order
+    X = X[expected_cols]
+
     try:
         pred = float(model.predict(X)[0])
         return pred, {
