@@ -53,5 +53,60 @@
         "path": "models\\forecast_model.pkl"
       }
     }
+  },
+  {
+    "generated_at": "2026-05-02T20:09:38.812191+00:00",
+    "artifacts": {
+      "yield": {
+        "available": true,
+        "metrics": {
+          "RandomForestRegressor": {
+            "train_rmse": 8.354785822261716,
+            "train_r2": 0.910467779218163,
+            "test_rmse": 9.654648853829414,
+            "test_r2": 0.8357772814541391
+          },
+          "LinearRegression": {
+            "train_rmse": 9.368572108759482,
+            "train_r2": 0.8874214832271176,
+            "test_rmse": 8.869672224284258,
+            "test_r2": 0.8613961118479503
+          }
+        },
+        "path": "models\\yield_model.pkl"
+      },
+      "classifier": {
+        "available": false,
+        "metrics": {},
+        "path": "models\\classifier.pkl"
+      },
+      "recommender": {
+        "available": true,
+        "metrics": {
+          "holdout_accuracy": 0.9636363636363636,
+          "holdout_f1_weighted": 0.9636541464526058,
+          "holdout_rmse": 1.4174240399721283
+        },
+        "path": "models\\crop_recommender.pkl"
+      },
+      "clustering": {
+        "available": true,
+        "metrics": {
+          "accuracy": 0.39045454545454544,
+          "f1_score": 0.31186261636304513,
+          "rmse": 0.9735128518552145
+        },
+        "path": "models\\clustering.pkl"
+      },
+      "rainfall_forecast": {
+        "available": true,
+        "metrics": {
+          "accuracy": 0.6285714285714286,
+          "f1_score": 0.7664670658682635,
+          "rmse": 11.084753498538607
+        },
+        "path": "models\\forecast_model.pkl"
+      }
+    }
   }
 ]

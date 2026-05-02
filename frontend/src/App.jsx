@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Line } from "react-chartjs-2";
 import {
   Chart as ChartJS,
@@ -10,67 +10,125 @@ import {
   Tooltip,
   Legend
 } from "chart.js";
-import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
-import L from "leaflet";
+import MapboxGlobe from "./components/MapboxGlobe";
+import globalLocations from "./data/globalLocations";
 
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend
-);
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
 const API_BASE = "http://127.0.0.1:8000";
 
-const cities = [
-  { name: "Lahore", lat: 31.5204, lng: 74.3587, rainfall: 620, temperature: 25.1, N: 88, P: 45, K: 42 },
-  { name: "Karachi", lat: 24.8607, lng: 67.0011, rainfall: 180, temperature: 28.9, N: 65, P: 30, K: 36 },
-  { name: "Islamabad", lat: 33.6844, lng: 73.0479, rainfall: 1150, temperature: 21.4, N: 74, P: 40, K: 39 },
-  { name: "Rawalpindi", lat: 33.5651, lng: 73.0169, rainfall: 1080, temperature: 22.2, N: 78, P: 41, K: 40 },
-  { name: "Faisalabad", lat: 31.4504, lng: 73.135, rainfall: 375, temperature: 25.9, N: 90, P: 48, K: 46 },
-  { name: "Multan", lat: 30.1575, lng: 71.5249, rainfall: 185, temperature: 27.8, N: 84, P: 43, K: 41 },
-  { name: "Peshawar", lat: 34.0151, lng: 71.5249, rainfall: 400, temperature: 23.7, N: 76, P: 38, K: 35 },
-  { name: "Quetta", lat: 30.1798, lng: 66.975, rainfall: 260, temperature: 19.6, N: 64, P: 29, K: 30 },
-  { name: "Hyderabad", lat: 25.396, lng: 68.3578, rainfall: 170, temperature: 29.4, N: 68, P: 34, K: 33 },
-  { name: "Sialkot", lat: 32.4945, lng: 74.5229, rainfall: 910, temperature: 23.3, N: 82, P: 44, K: 42 },
-  { name: "Gujranwala", lat: 32.1877, lng: 74.1945, rainfall: 780, temperature: 24.1, N: 80, P: 42, K: 41 },
-  { name: "Bahawalpur", lat: 29.3956, lng: 71.6836, rainfall: 145, temperature: 28.2, N: 72, P: 35, K: 36 }
-];
+// makeIcon removed — marker creation now handled inside MapboxGlobe.jsx
 
-const markerIcon = new L.Icon({
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34]
-});
+const REGION_COLORS = { arid: "#f59e0b", temperate: "#22d3ee", tropical: "#4ade80" };
+const RISK_COLORS = { low: "#4ade80", medium: "#fbbf24", high: "#f87171" };
 
-async function postJson(path, payload) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${path} failed: ${res.status} ${text}`);
-  }
-  return res.json();
+function getRainRegion(rain) {
+  if (rain < 250) return "arid";
+  if (rain <= 800) return "temperate";
+  return "tropical";
 }
 
+// ─── API helpers ─────────────────────────────────────────────────────────────
+function createApiError({ kind, path, message, status = null, details = null }) {
+  const err = new Error(message);
+  err.kind = kind; err.path = path; err.status = status; err.details = details;
+  return err;
+}
+
+function classifyError(err, path) {
+  if (err?.kind) return err;
+  if (err?.name === "AbortError") return createApiError({ kind: "network", path, message: `Request to ${path} was aborted.` });
+  if (err instanceof TypeError) return createApiError({ kind: "network", path, message: `Network error calling ${path}. Is the backend running?` });
+  return createApiError({ kind: "unknown", path, message: err?.message || `Unexpected error calling ${path}.` });
+}
+
+function getErrorMessage(err) {
+  if (!err) return "Unknown error";
+  if (err.kind === "network") return err.message;
+  if (err.kind === "backend") return `${err.path} failed (${err.status ?? "error"}): ${err.details || err.message}`;
+  return err.message || "Unexpected error";
+}
+
+async function postJson(path, payload) {
+  console.log("[API →]", path, payload ?? {});
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {})
+    });
+  } catch (err) {
+    throw classifyError(err, path);
+  }
+  const text = await res.text();
+  let parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch { parsed = null; }
+
+  if (!res.ok) {
+    const detail = (parsed && (parsed.detail || parsed.message || JSON.stringify(parsed))) || text || "No response body";
+    throw createApiError({ kind: "backend", path, status: res.status, details: detail, message: `Backend returned ${res.status}` });
+  }
+  console.log("[API ←]", path, parsed);
+  return parsed ?? {};
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
 function Spinner() {
   return (
     <div className="spinner-wrap">
       <div className="spinner" />
-      <p>Fetching live analytics...</p>
+      <p>Fetching live analytics…</p>
     </div>
   );
 }
 
+function RegionBadge({ region }) {
+  if (!region) return null;
+  const color = REGION_COLORS[region] || "#94a3b8";
+  return <span className="region-badge" style={{ background: color + "22", border: `1px solid ${color}88`, color }}>{region}</span>;
+}
+
+function RiskBadge({ risk }) {
+  if (!risk || risk === "N/A") return <span className="risk-badge risk-unknown">Unknown</span>;
+  const color = RISK_COLORS[risk.toLowerCase()] || "#94a3b8";
+  return <span className="risk-badge" style={{ background: color + "22", border: `1px solid ${color}88`, color }}>{risk.toUpperCase()}</span>;
+}
+
+function TopCropsPanel({ topCrops, confidenceScores }) {
+  if (!topCrops || topCrops.length === 0) return null;
+  return (
+    <div className="top-crops-panel">
+      <h3>🌾 Top Crop Recommendations</h3>
+      {topCrops.map((crop, i) => {
+        const pct = Math.round((confidenceScores?.[i] ?? 0) * 100);
+        const isTop = i === 0;
+        return (
+          <div key={crop} className={`crop-item ${isTop ? "crop-item--top" : ""}`}>
+            <div className="crop-item-header">
+              <span className="crop-rank">#{i + 1}</span>
+              <span className="crop-name">{crop.charAt(0).toUpperCase() + crop.slice(1)}</span>
+              <span className="crop-pct">{pct}%</span>
+            </div>
+            <div className="confidence-track">
+              <div
+                className="confidence-bar"
+                style={{
+                  width: `${pct}%`,
+                  background: isTop
+                    ? "linear-gradient(90deg, #22d3ee, #6366f1)"
+                    : "linear-gradient(90deg, #4b5563, #6b7280)"
+                }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [selectedCity, setSelectedCity] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -79,6 +137,7 @@ export default function App() {
   const [modelHealth, setModelHealth] = useState(null);
   const [metricsHistory, setMetricsHistory] = useState([]);
   const [metricsRefreshedAt, setMetricsRefreshedAt] = useState("");
+  const requestSeqRef = useRef(0);
 
   const fetchModelHealth = async () => {
     try {
@@ -86,9 +145,7 @@ export default function App() {
         fetch(`${API_BASE}/metrics`),
         fetch(`${API_BASE}/metrics/history`)
       ]);
-      if (!metricsRes.ok) {
-        throw new Error(`metrics failed: ${metricsRes.status}`);
-      }
+      if (!metricsRes.ok) throw new Error(`metrics failed: ${metricsRes.status}`);
       const data = await metricsRes.json();
       setModelHealth(data.artifacts ?? null);
       setMetricsRefreshedAt(data.generated_at ?? new Date().toISOString());
@@ -105,9 +162,7 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    fetchModelHealth();
-  }, []);
+  useEffect(() => { fetchModelHealth(); }, []);
 
   const getStatusLabel = (entry) => {
     if (!entry) return "Unknown";
@@ -125,29 +180,19 @@ export default function App() {
 
   const metricText = (metrics) => {
     if (!metrics) return "No metrics";
-    if (typeof metrics.holdout_accuracy === "number") {
+    if (typeof metrics.holdout_accuracy === "number")
       return `Acc ${metrics.holdout_accuracy.toFixed(2)} | F1 ${(metrics.holdout_f1_weighted ?? 0).toFixed(2)}`;
-    }
-    if (typeof metrics.accuracy === "number") {
-      return `Acc ${metrics.accuracy.toFixed(2)} | F1 ${(metrics.f1_score ?? 0).toFixed(2)} | RMSE ${(metrics.rmse ?? 0).toFixed(2)}`;
-    }
+    if (typeof metrics.accuracy === "number")
+      return `Acc ${metrics.accuracy.toFixed(2)} | F1 ${(metrics.f1_score ?? 0).toFixed(2)}`;
     return "Metrics tracked";
   };
 
   const metricValueForTrend = (metrics) => {
     if (!metrics) return { key: "", value: null, direction: "neutral" };
-    if (typeof metrics.rmse === "number") {
-      return { key: "rmse", value: metrics.rmse, direction: "lower_better" };
-    }
-    if (typeof metrics.holdout_rmse === "number") {
-      return { key: "holdout_rmse", value: metrics.holdout_rmse, direction: "lower_better" };
-    }
-    if (typeof metrics.holdout_accuracy === "number") {
-      return { key: "holdout_accuracy", value: metrics.holdout_accuracy, direction: "higher_better" };
-    }
-    if (typeof metrics.accuracy === "number") {
-      return { key: "accuracy", value: metrics.accuracy, direction: "higher_better" };
-    }
+    if (typeof metrics.rmse === "number") return { key: "rmse", value: metrics.rmse, direction: "lower_better" };
+    if (typeof metrics.holdout_rmse === "number") return { key: "holdout_rmse", value: metrics.holdout_rmse, direction: "lower_better" };
+    if (typeof metrics.holdout_accuracy === "number") return { key: "holdout_accuracy", value: metrics.holdout_accuracy, direction: "higher_better" };
+    if (typeof metrics.accuracy === "number") return { key: "accuracy", value: metrics.accuracy, direction: "higher_better" };
     return { key: "", value: null, direction: "neutral" };
   };
 
@@ -156,66 +201,115 @@ export default function App() {
     const prev = metricsHistory.at(-2)?.artifacts?.[modelKey]?.metrics;
     const current = metricValueForTrend(currentMetrics);
     const previous = metricValueForTrend(prev ?? last);
-    if (!current.key || current.value == null || previous.value == null) {
+    if (!current.key || current.value == null || previous.value == null)
       return { symbol: "•", label: "No trend", className: "trend-flat" };
-    }
     const delta = Number(current.value) - Number(previous.value);
-    if (Math.abs(delta) < 1e-9) {
-      return { symbol: "→", label: "Stable", className: "trend-flat" };
-    }
-    if (current.direction === "lower_better") {
-      return delta < 0
-        ? { symbol: "↓", label: "Improving", className: "trend-up" }
-        : { symbol: "↑", label: "Regressing", className: "trend-down" };
-    }
-    return delta > 0
-      ? { symbol: "↑", label: "Improving", className: "trend-up" }
-      : { symbol: "↓", label: "Regressing", className: "trend-down" };
+    if (Math.abs(delta) < 1e-9) return { symbol: "→", label: "Stable", className: "trend-flat" };
+    if (current.direction === "lower_better")
+      return delta < 0 ? { symbol: "↓", label: "Improving", className: "trend-up" } : { symbol: "↑", label: "Regressing", className: "trend-down" };
+    return delta > 0 ? { symbol: "↑", label: "Improving", className: "trend-up" } : { symbol: "↓", label: "Regressing", className: "trend-down" };
   };
 
   const handleCityClick = async (city) => {
+    const requestId = ++requestSeqRef.current;
     setSelectedCity(city);
     setLoading(true);
     setError("");
+    setResult(null);
 
-    const baseFeatures = {
-      rainfall: city.rainfall,
-      temperature: city.temperature,
-      N: city.N,
-      P: city.P,
-      K: city.K
+    // ── Validate inputs ──
+    const temp = Number(city?.temp);
+    const rain = Number(city?.rain);
+    const hum = Number(city?.humidity ?? 60);
+
+    if (!Number.isFinite(temp) || !Number.isFinite(rain) || !Number.isFinite(hum)) {
+      setError("Invalid climate data for this location.");
+      setLoading(false);
+      return;
+    }
+
+    // ── FIX: classify-yield payload has ONLY 3 fields (no crop_type!) ──
+    const classifyPayload = { temperature: temp, rainfall: rain, humidity: hum };
+
+    const yieldPayload = { temperature: temp, rainfall: rain, humidity: hum, crop_type: "Wheat" };
+    const clusterPayload = {
+      samples: [{
+        rainfall: rain,
+        temperature: temp,
+        N: Number(city?.N ?? 75),
+        P: Number(city?.P ?? 40),
+        K: Number(city?.K ?? 38)
+      }]
     };
 
     try {
-      const [yieldResp, classResp, forecastResp, recommendResp] = await Promise.all([
-        postJson("/predict-yield", { features: baseFeatures }),
-        postJson("/classify-yield", { features: baseFeatures }),
-        postJson("/forecast", { periods: 12, context_features: baseFeatures }),
-        postJson("/recommend", { ...baseFeatures })
+      const calls = await Promise.allSettled([
+        postJson("/predict-yield", yieldPayload),
+        postJson("/classify-yield", classifyPayload),   // ← fixed: no crop_type
+        postJson("/forecast", { city: city.name }),
+        postJson("/recommend", {}),
+        postJson("/cluster", clusterPayload)
       ]);
 
-      let clusterResp = null;
-      try {
-        clusterResp = await postJson("/cluster", { samples: [baseFeatures] });
-      } catch (clusterErr) {
-        clusterResp = { clusters: [], error: String(clusterErr) };
-      }
+      const [yieldRes, classRes, forecastRes, recommendRes, clusterRes] = calls;
+
+      const failures = calls
+        .filter((r) => r.status === "rejected")
+        .map((r) => classifyError(r.reason, "unknown"))
+        .map((e) => getErrorMessage(e));
+
+      const yieldResp = yieldRes.status === "fulfilled" ? yieldRes.value : null;
+      const classResp = classRes.status === "fulfilled" ? classRes.value : null;
+      const forecastResp = forecastRes.status === "fulfilled" ? forecastRes.value : null;
+      const recommendResp = recommendRes.status === "fulfilled" ? recommendRes.value : null;
+      const clusterResp = clusterRes.status === "fulfilled" ? clusterRes.value : null;
+
+      const forecastPoints = Array.isArray(forecastResp?.forecast)
+        ? forecastResp.forecast.map((p, i) => {
+            if (typeof p === "number") return { date: `Step ${i + 1}`, rainfall: Number(p) || 0, prediction: Number(p) || 0 };
+            return { date: p?.date ?? `Step ${i + 1}`, rainfall: Number(p?.rainfall ?? p?.prediction ?? 0), prediction: Number(p?.prediction ?? p?.rainfall ?? 0) };
+          })
+        : [];
+
+      if (requestId !== requestSeqRef.current) return;
 
       setResult({
-        cropSuitabilityScore: yieldResp.crop_suitability_score ?? yieldResp.prediction,
-        riskLevel: classResp.risk_level ?? classResp.prediction,
-        projectedSuitability: forecastResp.suitability_projection ?? null,
-        rainfallHistory: forecastResp.historical ?? [],
-        forecast: forecastResp.forecast ?? [],
-        recommendation: recommendResp,
-        cluster: clusterResp
+        cropSuitabilityScore: Number(yieldResp?.crop_suitability_score ?? yieldResp?.prediction ?? 0),
+        riskLevel: classResp?.risk_level ?? "high",
+        regionType: classResp?.region_type ?? getRainRegion(rain),
+        topCrops: classResp?.top_crops ?? [],
+        confidenceScores: classResp?.confidence_scores ?? [],
+        projectedSuitability: forecastResp?.suitability_projection ?? null,
+        rainfallHistory: Array.isArray(forecastResp?.historical) ? forecastResp.historical : [],
+        forecast: forecastPoints,
+        recommendation: recommendResp ?? { recommendations: [] },
+        cluster: clusterResp ?? { clusters: [] }
       });
+
+      if (failures.length > 0) {
+        setError(`Partial data loaded. ${failures.join(" | ")}`);
+      } else {
+        setError("");
+      }
+
       await fetchModelHealth();
     } catch (err) {
-      setError(err.message || "Unable to fetch data from backend.");
-      setResult(null);
+      if (requestId !== requestSeqRef.current) return;
+      setError(getErrorMessage(classifyError(err, "dashboard")));
+      setResult({
+        cropSuitabilityScore: 0,
+        riskLevel: "high",
+        regionType: getRainRegion(city?.rain ?? 0),
+        topCrops: [],
+        confidenceScores: [],
+        projectedSuitability: null,
+        rainfallHistory: [],
+        forecast: [],
+        recommendation: { recommendations: [] },
+        cluster: { clusters: [] }
+      });
     } finally {
-      setLoading(false);
+      if (requestId === requestSeqRef.current) setLoading(false);
     }
   };
 
@@ -230,25 +324,8 @@ export default function App() {
     return {
       labels,
       datasets: [
-        {
-          label: "Historical Rainfall",
-          data: historyData,
-          borderColor: "#94a3b8",
-          backgroundColor: "rgba(148,163,184,0.15)",
-          tension: 0.2,
-          pointRadius: 1.5,
-          fill: false
-        },
-        {
-          label: "Forecast Rainfall",
-          data: forecastData,
-          borderColor: "#22d3ee",
-          backgroundColor: "rgba(34,211,238,0.2)",
-          tension: 0.3,
-          pointRadius: 2,
-          borderDash: [6, 3],
-          fill: false
-        }
+        { label: "Historical Rainfall", data: historyData, borderColor: "#94a3b8", backgroundColor: "rgba(148,163,184,0.15)", tension: 0.2, pointRadius: 1.5, fill: false },
+        { label: "Forecast Rainfall", data: forecastData, borderColor: "#22d3ee", backgroundColor: "rgba(34,211,238,0.2)", tension: 0.3, pointRadius: 2, borderDash: [6, 3], fill: false }
       ]
     };
   }, [result]);
@@ -256,75 +333,95 @@ export default function App() {
   const chartOptions = {
     responsive: true,
     maintainAspectRatio: false,
-    plugins: {
-      legend: { labels: { color: "#c7d2fe" } }
-    },
+    plugins: { legend: { labels: { color: "#c7d2fe" } } },
     scales: {
       x: { ticks: { color: "#9ca3af" }, grid: { color: "rgba(255,255,255,0.08)" } },
-      y: { ticks: { color: "#9ca3af" }, grid: { color: "rgba(255,255,255,0.08)" }, title: { display: true, text: "Rainfall", color: "#cbd5e1" } }
+      y: { ticks: { color: "#9ca3af" }, grid: { color: "rgba(255,255,255,0.08)" }, title: { display: true, text: "Rainfall (mm)", color: "#cbd5e1" } }
     }
   };
+
+  // cityIcons memo removed — icon creation handled inside MapboxGlobe.jsx
 
   return (
     <div className="dashboard">
       <aside className="sidebar">
+        {/* Header */}
         <div className="panel glass">
-          <h1>Agri Intelligence</h1>
-          <p className="muted">Pakistan crop insights powered by ML + geospatial mapping.</p>
+          <h1>🌍 Global Agri Intelligence</h1>
+          <p className="muted">Region-aware ML crop predictions across 120+ global locations. Powered by RandomForest + climate analysis.</p>
+          <div className="legend-row">
+            <span className="legend-dot" style={{ background: REGION_COLORS.arid }} /> Arid (&lt;250mm)
+            <span className="legend-dot" style={{ background: REGION_COLORS.temperate }} /> Temperate
+            <span className="legend-dot" style={{ background: REGION_COLORS.tropical }} /> Tropical (&gt;800mm)
+          </div>
         </div>
 
+        {/* Results panel */}
         <div className={`panel glass transition ${loading ? "dimmed" : ""}`}>
-          {!selectedCity && <p className="muted">Click any city marker to load analytics.</p>}
+          {!selectedCity && <p className="muted center-text">📍 Click any map marker to load live analytics.</p>}
           {loading && <Spinner />}
           {!loading && error && <div className="error-box">{error}</div>}
 
-          {!loading && !error && result && selectedCity && (
+          {!loading && result && selectedCity && (
             <div className="metrics premium">
-              <h2>{selectedCity.name}</h2>
+              <div className="city-header">
+                <h2>{selectedCity.name}</h2>
+                <div className="city-badges">
+                  <RegionBadge region={result.regionType} />
+                  <RiskBadge risk={result.riskLevel} />
+                </div>
+              </div>
+
+              <div className="climate-stats">
+                <div className="climate-stat">
+                  <span>🌡️ Temp</span>
+                  <strong>{selectedCity.temp}°C</strong>
+                </div>
+                <div className="climate-stat">
+                  <span>🌧️ Rainfall</span>
+                  <strong>{selectedCity.rain}mm</strong>
+                </div>
+                <div className="climate-stat">
+                  <span>💧 Humidity</span>
+                  <strong>{selectedCity.humidity ?? 60}%</strong>
+                </div>
+              </div>
+
               <div className="metric-grid">
                 <div className="metric-card score-card">
-                  <span>Crop Suitability Score</span>
-                  <strong>{Number(result.cropSuitabilityScore || 0).toFixed(2)}</strong>
+                  <span>Yield Score</span>
+                  <strong>{Number(result.cropSuitabilityScore ?? 0).toFixed(2)}</strong>
                 </div>
                 <div className="metric-card risk-card">
                   <span>Risk Level</span>
-                  <strong>{result.riskLevel || "N/A"}</strong>
+                  <strong style={{ color: RISK_COLORS[result.riskLevel] || "#f8fafc" }}>
+                    {result.riskLevel?.toUpperCase() || "HIGH"}
+                  </strong>
                 </div>
                 <div className="metric-card">
                   <span>Cluster</span>
-                  <strong>{result.cluster?.clusters?.[0] ?? "N/A"}</strong>
+                  <strong>{result?.cluster?.clusters?.[0] ?? "—"}</strong>
                 </div>
               </div>
 
-              {result.projectedSuitability && (
+              {/* TOP 3 CROPS */}
+              <TopCropsPanel topCrops={result.topCrops} confidenceScores={result.confidenceScores} />
+
+              {result?.projectedSuitability && (
                 <div className="projection-box">
-                  <p>
-                    <strong>Projected next-month score:</strong>{" "}
-                    {Number(result.projectedSuitability.crop_suitability_score || 0).toFixed(2)}
-                  </p>
-                  <p>
-                    <strong>Projected risk:</strong> {result.projectedSuitability.risk_level || "N/A"}
-                  </p>
+                  <p><strong>Projected next-month score:</strong>{" "}{Number(result.projectedSuitability?.crop_suitability_score ?? 0).toFixed(2)}</p>
+                  <p><strong>Projected risk:</strong> {result.projectedSuitability?.risk_level || "—"}</p>
                 </div>
               )}
 
-              <div className="recommendation">
-                <h3>Recommendation</h3>
-                <p><strong>Best crop:</strong> {result.recommendation?.best_crop || "N/A"}</p>
-                <p>{result.recommendation?.fertilizer_suggestion || "No fertilizer suggestion."}</p>
-              </div>
-
+              {/* Model Health */}
               <div className="health-box">
                 <div className="health-header">
                   <h3>Model Health</h3>
-                  <button className="refresh-btn" onClick={fetchModelHealth} type="button">
-                    Refresh
-                  </button>
+                  <button className="refresh-btn" onClick={fetchModelHealth} type="button">Refresh</button>
                 </div>
                 {metricsRefreshedAt && (
-                  <p className="muted health-time">
-                    Last updated: {new Date(metricsRefreshedAt).toLocaleString()}
-                  </p>
+                  <p className="muted health-time">Updated: {new Date(metricsRefreshedAt).toLocaleString()}</p>
                 )}
                 {!modelHealth && <p className="muted">Model metrics unavailable.</p>}
                 {modelHealth && (
@@ -332,9 +429,7 @@ export default function App() {
                     {Object.entries(modelHealth).map(([name, entry]) => (
                       <div className="health-row" key={name}>
                         <span>{name.replaceAll("_", " ")}</span>
-                        <strong className={`status-badge ${getStatusClass(entry)}`}>
-                          {getStatusLabel(entry)}
-                        </strong>
+                        <strong className={`status-badge ${getStatusClass(entry)}`}>{getStatusLabel(entry)}</strong>
                         <em>{metricText(entry?.metrics)}</em>
                         <small className={`trend-chip ${trendForModel(name, entry?.metrics).className}`}>
                           {trendForModel(name, entry?.metrics).symbol} {trendForModel(name, entry?.metrics).label}
@@ -345,14 +440,15 @@ export default function App() {
                 )}
               </div>
 
+              {/* Forecast Chart */}
               <div className="chart-wrap">
                 <h3>Rainfall Forecast</h3>
-                {result.forecast.length > 0 ? (
+                {(result?.forecast ?? []).length > 0 ? (
                   <div className="chart-container">
                     <Line data={chartData} options={chartOptions} />
                   </div>
                 ) : (
-                  <p className="muted">No forecast data available.</p>
+                  <p className="muted">No forecast data for this location.</p>
                 )}
               </div>
             </div>
@@ -360,29 +456,12 @@ export default function App() {
         </div>
       </aside>
 
+      {/* 3D Globe — Mapbox GL JS */}
       <main className="map-area">
-        <MapContainer center={[30.3753, 69.3451]} zoom={5.2} scrollWheelZoom className="map">
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a>'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
-          {cities.map((city) => (
-            <Marker
-              key={city.name}
-              position={[city.lat, city.lng]}
-              icon={markerIcon}
-              eventHandlers={{ click: () => handleCityClick(city) }}
-            >
-              <Popup>
-                <strong>{city.name}</strong>
-                <br />
-                Rainfall: {city.rainfall} mm
-                <br />
-                Temp: {city.temperature} C
-              </Popup>
-            </Marker>
-          ))}
-        </MapContainer>
+        <MapboxGlobe
+          cities={globalLocations}
+          onCitySelect={handleCityClick}
+        />
       </main>
     </div>
   );
