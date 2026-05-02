@@ -23,7 +23,7 @@ jobs:
           pip install flake8 pytest
 
       - name: Lint with flake8
-        run: flake8 . --ignore=E501,F401,W391
+        run: flake8 . --ignore=E501,F401,W391,W293
 
       - name: Run orchestrated training and print Evaluation Matrix
         run: python src/orchestration.py

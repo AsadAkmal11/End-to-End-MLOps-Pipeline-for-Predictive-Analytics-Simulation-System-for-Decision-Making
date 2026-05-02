@@ -95,21 +95,16 @@ def train_compare_and_save(
     random_state: int,
 ) -> Path:
     df = pd.read_csv(csv_path, nrows=100)
-    
     # Drop Date if it exists
     if "Date" in df.columns:
         df = df.drop(columns=["Date"])
-        
     numerical, categorical = infer_feature_columns(df, target_column)
     preprocessor = build_feature_preprocessor(numerical, categorical)
     
     X = df.drop(columns=[target_column])
     y = df[target_column].astype(float)
-    
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=random_state
-    )
-
+        X, y, test_size=0.2, random_state=random_state)
     models: list[tuple[str, Any]] = [
         (
             "RandomForestRegressor",
