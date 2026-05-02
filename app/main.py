@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from functools import lru_cache
 from pathlib import Path
@@ -42,9 +43,11 @@ app.add_middleware(
 MODELS_DIR = Path("models")
 YIELD_MODEL_PATH = MODELS_DIR / "yield_model.pkl"
 CLASSIFIER_MODEL_PATH = MODELS_DIR / "classifier.pkl"
-FORECAST_MODEL_PATH = MODELS_DIR / "time_series.pkl"
+FORECAST_MODEL_PATH = MODELS_DIR / "forecast_model.pkl"
 CLUSTER_MODEL_PATH = MODELS_DIR / "clustering.pkl"
 RECOMMENDER_MODEL_PATH = MODELS_DIR / "crop_recommender.pkl"
+RAINFALL_DATA_PATH = Path("data") / "Rain_fall_in_Pakistan.csv"
+METRICS_HISTORY_PATH = MODELS_DIR / "metrics_history.json"
 
 
 class FeaturePayload(BaseModel):
@@ -64,6 +67,7 @@ class ForecastRequest(BaseModel):
     periods: int = Field(12, ge=1, le=60)
     order: tuple[int, int, int] = (1, 1, 1)
     historical_data: list[ForecastPoint] | None = None
+    context_features: dict[str, float] | None = None
     baseline: float | None = Field(
         None,
         description="Optional baseline value to use for a naive forecast when no model/history exists.",
@@ -138,6 +142,49 @@ def _predict_yield_value(features: dict[str, float]) -> tuple[float, dict[str, A
     }
 
 
+def _risk_from_score(score: float) -> str:
+    if score <= 0.33:
+        return "low"
+    if score >= 0.66:
+        return "high"
+    return "medium"
+
+
+def _artifact_metrics(path: Path, label: str) -> dict[str, Any]:
+    if not path.is_file():
+        return {"artifact": label, "path": str(path), "available": False, "metrics": {}}
+    try:
+        artifact = _load_artifact(path)
+        metrics = artifact.get("metrics", {})
+        return {
+            "artifact": label,
+            "path": str(path),
+            "available": True,
+            "metrics": metrics if isinstance(metrics, dict) else {"raw": metrics},
+            "updated_at": pd.Timestamp(path.stat().st_mtime, unit="s").isoformat(),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "artifact": label,
+            "path": str(path),
+            "available": False,
+            "metrics": {},
+            "error": str(exc),
+        }
+
+
+def _metrics_history() -> list[dict[str, Any]]:
+    if not METRICS_HISTORY_PATH.is_file():
+        return []
+    try:
+        raw = json.loads(METRICS_HISTORY_PATH.read_text(encoding="utf-8"))
+        if isinstance(raw, list):
+            return raw
+    except Exception:  # noqa: BLE001
+        return []
+    return []
+
+
 @lru_cache(maxsize=1)
 def get_yield_artifact() -> dict[str, Any]:
     LOG.info("Loading yield model from %s", YIELD_MODEL_PATH.resolve())
@@ -152,7 +199,7 @@ def get_classifier_artifact() -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def get_forecast_artifact() -> dict[str, Any]:
-    LOG.info("Loading time-series model from %s", FORECAST_MODEL_PATH.resolve())
+    LOG.info("Loading rainfall forecast model from %s", FORECAST_MODEL_PATH.resolve())
     return _load_artifact(FORECAST_MODEL_PATH)
 
 
@@ -165,6 +212,35 @@ def get_cluster_artifact() -> dict[str, Any]:
 @app.get("/")
 def home() -> dict[str, str]:
     return {"message": "ML API running"}
+
+
+@app.get("/metrics")
+def metrics() -> dict[str, Any]:
+    """
+    Return currently available model metrics from saved artifacts.
+    """
+    payload = {
+        "yield": _artifact_metrics(YIELD_MODEL_PATH, "yield"),
+        "classifier": _artifact_metrics(CLASSIFIER_MODEL_PATH, "classifier"),
+        "recommender": _artifact_metrics(RECOMMENDER_MODEL_PATH, "crop_recommender"),
+        "clustering": _artifact_metrics(CLUSTER_MODEL_PATH, "clustering"),
+        "rainfall_forecast": _artifact_metrics(FORECAST_MODEL_PATH, "forecast_model"),
+    }
+    return {
+        "message": "Model metrics snapshot",
+        "generated_at": pd.Timestamp.utcnow().isoformat(),
+        "artifacts": payload,
+    }
+
+
+@app.get("/metrics/history")
+def metrics_history() -> dict[str, Any]:
+    history = _metrics_history()
+    return {
+        "message": "Model metrics history",
+        "count": len(history),
+        "history": history,
+    }
 
 
 @app.post("/predict-yield")
@@ -277,29 +353,61 @@ def _series_from_payload(points: list[ForecastPoint]) -> pd.Series:
     return monthly
 
 
+def _load_rainfall_history() -> pd.Series:
+    if not RAINFALL_DATA_PATH.is_file():
+        raise FileNotFoundError(f"Rainfall dataset not found: {RAINFALL_DATA_PATH}")
+    df = pd.read_csv(RAINFALL_DATA_PATH, skiprows=[1])
+    if "date" not in df.columns or "rfh" not in df.columns:
+        raise ValueError("Rainfall dataset must include date and rfh columns.")
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["rfh"] = pd.to_numeric(df["rfh"], errors="coerce")
+    df = df.dropna(subset=["date", "rfh"])
+    if df.empty:
+        raise ValueError("Rainfall dataset has no valid rows.")
+    monthly = (
+        df.groupby("date", as_index=False)["rfh"]
+        .mean()
+        .set_index("date")["rfh"]
+        .resample("MS")
+        .mean()
+        .asfreq("MS")
+        .interpolate(method="linear")
+    )
+    return monthly
+
+
 @app.post("/forecast")
 def forecast(request: ForecastRequest) -> dict[str, Any]:
     """
-    Forecast future yield values.
-    - If historical_data is provided: fit ARIMA on provided data.
-    - Else: load pre-trained artifact from models/time_series.pkl.
+    Forecast future rainfall values and optionally derive suitability/risk using
+    the first forecasted rainfall value with provided context features.
     """
     try:
         periods = int(request.periods)
         order = tuple(int(x) for x in request.order)
 
         if request.historical_data:
-            history = _series_from_payload(request.historical_data)
+            history = _series_from_payload(request.historical_data).rename("rainfall")
             fitted = ARIMA(history, order=order).fit()
             fc = fitted.forecast(steps=periods)
-            source = "request_historical_data"
+            source = "request_historical_data_arima"
         else:
             if FORECAST_MODEL_PATH.is_file():
                 artifact = get_forecast_artifact()
                 model = artifact.get("model")
                 history = artifact.get("history")
+                model_type = str(artifact.get("model_type", "")).lower()
                 if model is not None and hasattr(model, "forecast"):
                     fc = model.forecast(steps=periods)
+                elif model_type == "rolling_mean":
+                    window = int(artifact.get("window", 6))
+                    base = float(pd.Series(history).tail(window).mean())
+                    idx = pd.date_range(
+                        start=pd.to_datetime(pd.Series(history).index[-1]) + pd.offsets.MonthBegin(1),
+                        periods=periods,
+                        freq="MS",
+                    )
+                    fc = pd.Series([base] * periods, index=idx)
                 elif history is not None:
                     fitted = ARIMA(history, order=order).fit()
                     fc = fitted.forecast(steps=periods)
@@ -307,23 +415,50 @@ def forecast(request: ForecastRequest) -> dict[str, Any]:
                     raise ValueError("Invalid forecast artifact: missing model/history.")
                 source = "saved_model"
             else:
-                # Fallback: naive forecast (flatline) so the dashboard can run even
-                # when a time-series dataset isn't available in this repo.
-                baseline = float(request.baseline) if request.baseline is not None else 0.0
+                history = _load_rainfall_history()
+                base = (
+                    float(request.baseline)
+                    if request.baseline is not None
+                    else float(history.tail(6).mean())
+                )
                 idx = pd.date_range(
-                    start=pd.Timestamp.today().normalize().replace(day=1),
+                    start=history.index[-1] + pd.offsets.MonthBegin(1),
                     periods=periods,
                     freq="MS",
                 )
-                fc = pd.Series([baseline] * periods, index=idx)
-                source = "naive_baseline_fallback"
+                fc = pd.Series([base] * periods, index=idx)
+                source = "dataset_history_baseline_fallback"
 
         forecast_items = [
-            {"date": str(idx.date()), "prediction": float(val)}
+            {"date": str(idx.date()), "prediction": float(val), "rainfall": float(val)}
             for idx, val in fc.items()
         ]
+        historical_tail = []
+        if "history" in locals() and history is not None:
+            h = pd.Series(history).dropna().tail(24)
+            historical_tail = [{"date": str(i.date()), "rainfall": float(v)} for i, v in h.items()]
+
+        suitability = None
+        if request.context_features and len(forecast_items) > 0:
+            ctx = dict(request.context_features)
+            ctx["rainfall"] = float(forecast_items[0]["prediction"])
+            score, meta = _predict_yield_value(ctx)
+            suitability = {
+                "crop_suitability_score": float(score),
+                "risk_level": _risk_from_score(float(score)),
+                "features_used": ctx,
+                "source": meta.get("source"),
+            }
+
         LOG.info("/forecast success")
-        return {"source": source, "periods": periods, "order": order, "forecast": forecast_items}
+        return {
+            "source": source,
+            "periods": periods,
+            "order": order,
+            "historical": historical_tail,
+            "forecast": forecast_items,
+            "suitability_projection": suitability,
+        }
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

@@ -10,8 +10,8 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: radial-gradient(circle at 20% 20%, #1f3b77 0%, #081226 42%, #05080f 100%);
-  color: #e5e7eb;
+  background: radial-gradient(circle at 10% 10%, #1f3c88 0%, #07122b 45%, #020611 100%);
+  color: #e2e8f0;
 }
 
 #root {
@@ -20,10 +20,10 @@ body {
 
 .dashboard {
   display: grid;
-  grid-template-columns: 420px 1fr;
+  grid-template-columns: minmax(380px, 460px) 1fr;
   min-height: 100vh;
-  gap: 14px;
-  padding: 14px;
+  gap: 16px;
+  padding: 16px;
 }
 
 .sidebar {
@@ -33,25 +33,26 @@ body {
 }
 
 .glass {
-  background: linear-gradient(135deg, rgba(22, 28, 45, 0.8), rgba(8, 10, 20, 0.78));
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.35);
+  background: linear-gradient(160deg, rgba(15, 23, 42, 0.84), rgba(2, 6, 23, 0.8));
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.4);
 }
 
 .panel {
-  border-radius: 18px;
-  padding: 18px 18px;
+  border-radius: 20px;
+  padding: 20px;
 }
 
 .panel h1 {
   margin: 0 0 8px;
-  font-size: 1.6rem;
+  font-size: 1.65rem;
+  letter-spacing: 0.2px;
 }
 
 .muted {
-  color: #a5b4fc;
-  font-size: 0.95rem;
+  color: #93c5fd;
+  font-size: 0.92rem;
 }
 
 .metrics h2 {
@@ -62,33 +63,188 @@ body {
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 16px;
+  gap: 12px;
+  margin-bottom: 14px;
 }
 
 .metric-card {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
-  padding: 10px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  padding: 12px;
+  min-height: 88px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .metric-card span {
-  color: #9ca3af;
-  font-size: 0.8rem;
+  color: #94a3b8;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   display: block;
 }
 
 .metric-card strong {
-  font-size: 1rem;
-  color: #e0f2fe;
+  margin-top: 6px;
+  font-size: 1.02rem;
+  color: #f8fafc;
+}
+
+.score-card {
+  border-color: rgba(34, 211, 238, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.22);
+}
+
+.risk-card {
+  border-color: rgba(250, 204, 21, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(250, 204, 21, 0.2);
+}
+
+.projection-box {
+  background: rgba(14, 116, 144, 0.18);
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+
+.projection-box p {
+  margin: 4px 0;
+  font-size: 0.9rem;
 }
 
 .recommendation {
-  background: rgba(111, 76, 255, 0.12);
+  background: rgba(124, 58, 237, 0.14);
   border-radius: 12px;
   padding: 12px;
-  border: 1px solid rgba(111, 76, 255, 0.35);
+  border: 1px solid rgba(167, 139, 250, 0.4);
+}
+
+.health-box {
+  margin-top: 12px;
+  background: rgba(15, 23, 42, 0.7);
+  border-radius: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  padding: 12px;
+}
+
+.health-box h3 {
+  margin: 0 0 8px;
+}
+
+.health-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.refresh-btn {
+  background: rgba(14, 165, 233, 0.15);
+  color: #bae6fd;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.refresh-btn:hover {
+  background: rgba(14, 165, 233, 0.25);
+}
+
+.health-time {
+  margin-top: 0;
+  margin-bottom: 8px;
+  font-size: 0.76rem;
+}
+
+.health-row {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr 1.5fr 0.9fr;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.25);
+}
+
+.health-row:last-child {
+  border-bottom: none;
+}
+
+.health-row span {
+  color: #cbd5e1;
+  font-size: 0.88rem;
+}
+
+.health-row strong {
+  font-size: 0.75rem;
+}
+
+.health-row em {
+  color: #94a3b8;
+  font-style: normal;
+  font-size: 0.78rem;
+  text-align: right;
+}
+
+.trend-chip {
+  justify-self: end;
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.trend-up {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.trend-down {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.trend-flat {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+.status-badge {
+  display: inline-flex;
+  justify-content: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.status-online {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.status-missing {
+  color: #fdba74;
+  background: rgba(249, 115, 22, 0.14);
+  border-color: rgba(249, 115, 22, 0.45);
+}
+
+.status-error {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.status-unknown {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.35);
 }
 
 .recommendation h3,
@@ -106,22 +262,22 @@ body {
 }
 
 .chart-container {
-  height: 240px;
+  height: 280px;
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 12px;
-  padding: 10px;
+  padding: 12px;
 }
 
 .map-area {
-  border-radius: 18px;
+  border-radius: 20px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
 }
 
 .map {
-  height: calc(100vh - 28px);
+  height: calc(100vh - 32px);
   width: 100%;
 }
 
@@ -141,8 +297,8 @@ body {
 }
 
 .error-box {
-  background: rgba(220, 38, 38, 0.14);
-  border: 1px solid rgba(248, 113, 113, 0.45);
+  background: rgba(220, 38, 38, 0.2);
+  border: 1px solid rgba(248, 113, 113, 0.55);
   color: #fecaca;
   padding: 10px;
   border-radius: 10px;

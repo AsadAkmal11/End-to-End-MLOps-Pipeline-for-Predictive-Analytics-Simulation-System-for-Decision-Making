@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, f1_score, mean_squared_error
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -93,6 +93,16 @@ def _compute_rule_stats(df: pd.DataFrame, feature_cols: tuple[str, ...], target_
     return stats
 
 
+def _print_evaluation_matrix(rows: list[dict[str, float | str]]) -> None:
+    print("\n## Evaluation Matrix")
+    print("| Model | Accuracy | F1-Score | RMSE |")
+    print("|---|---:|---:|---:|")
+    for row in rows:
+        print(
+            f"| {row['model']} | {float(row['accuracy']):.4f} | {float(row['f1_score']):.4f} | {float(row['rmse']):.4f} |"
+        )
+
+
 def train_and_save(csv_path: Path, output_path: Path, target_col: str) -> Path:
     df = _load_dataset(csv_path)
 
@@ -136,8 +146,24 @@ def train_and_save(csv_path: Path, output_path: Path, target_col: str) -> Path:
 
     pred = model.predict(X_test)
     acc = float(accuracy_score(y_test, pred))
+    f1 = float(f1_score(y_test, pred, average="weighted", zero_division=0))
+    classes = sorted(y.unique().tolist())
+    c2i = {c: i for i, c in enumerate(classes)}
+    y_true_num = y_test.map(c2i).to_numpy(dtype=float)
+    y_pred_num = pd.Series(pred).map(c2i).to_numpy(dtype=float)
+    rmse = float(mean_squared_error(y_true_num, y_pred_num) ** 0.5)
     LOG.info("Holdout accuracy: %.4f", acc)
     LOG.info("Classification report (holdout):\n%s", classification_report(y_test, pred))
+    _print_evaluation_matrix(
+        [
+            {
+                "model": "crop_recommender_rf",
+                "accuracy": acc,
+                "f1_score": f1,
+                "rmse": rmse,
+            }
+        ]
+    )
 
     # Rule stats computed on TRAIN only to avoid leakage.
     rule_stats = _compute_rule_stats(
@@ -152,7 +178,7 @@ def train_and_save(csv_path: Path, output_path: Path, target_col: str) -> Path:
         "feature_columns": list(CORE_FEATURES),
         "target_column": target_col,
         "rule_stats": rule_stats,
-        "metrics": {"holdout_accuracy": acc},
+        "metrics": {"holdout_accuracy": acc, "holdout_f1_weighted": f1, "holdout_rmse": rmse},
     }
     joblib.dump(artifact, output_path)
     LOG.info("Saved recommender artifact to %s", output_path.resolve())

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Line } from "react-chartjs-2";
 import {
   Chart as ChartJS,
@@ -76,6 +76,102 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  const [modelHealth, setModelHealth] = useState(null);
+  const [metricsHistory, setMetricsHistory] = useState([]);
+  const [metricsRefreshedAt, setMetricsRefreshedAt] = useState("");
+
+  const fetchModelHealth = async () => {
+    try {
+      const [metricsRes, historyRes] = await Promise.all([
+        fetch(`${API_BASE}/metrics`),
+        fetch(`${API_BASE}/metrics/history`)
+      ]);
+      if (!metricsRes.ok) {
+        throw new Error(`metrics failed: ${metricsRes.status}`);
+      }
+      const data = await metricsRes.json();
+      setModelHealth(data.artifacts ?? null);
+      setMetricsRefreshedAt(data.generated_at ?? new Date().toISOString());
+      if (historyRes.ok) {
+        const h = await historyRes.json();
+        setMetricsHistory(Array.isArray(h.history) ? h.history : []);
+      } else {
+        setMetricsHistory([]);
+      }
+    } catch {
+      setModelHealth(null);
+      setMetricsHistory([]);
+      setMetricsRefreshedAt("");
+    }
+  };
+
+  useEffect(() => {
+    fetchModelHealth();
+  }, []);
+
+  const getStatusLabel = (entry) => {
+    if (!entry) return "Unknown";
+    if (entry.available) return "Online";
+    if (entry.error) return "Error";
+    return "Missing";
+  };
+
+  const getStatusClass = (entry) => {
+    if (!entry) return "status-unknown";
+    if (entry.available) return "status-online";
+    if (entry.error) return "status-error";
+    return "status-missing";
+  };
+
+  const metricText = (metrics) => {
+    if (!metrics) return "No metrics";
+    if (typeof metrics.holdout_accuracy === "number") {
+      return `Acc ${metrics.holdout_accuracy.toFixed(2)} | F1 ${(metrics.holdout_f1_weighted ?? 0).toFixed(2)}`;
+    }
+    if (typeof metrics.accuracy === "number") {
+      return `Acc ${metrics.accuracy.toFixed(2)} | F1 ${(metrics.f1_score ?? 0).toFixed(2)} | RMSE ${(metrics.rmse ?? 0).toFixed(2)}`;
+    }
+    return "Metrics tracked";
+  };
+
+  const metricValueForTrend = (metrics) => {
+    if (!metrics) return { key: "", value: null, direction: "neutral" };
+    if (typeof metrics.rmse === "number") {
+      return { key: "rmse", value: metrics.rmse, direction: "lower_better" };
+    }
+    if (typeof metrics.holdout_rmse === "number") {
+      return { key: "holdout_rmse", value: metrics.holdout_rmse, direction: "lower_better" };
+    }
+    if (typeof metrics.holdout_accuracy === "number") {
+      return { key: "holdout_accuracy", value: metrics.holdout_accuracy, direction: "higher_better" };
+    }
+    if (typeof metrics.accuracy === "number") {
+      return { key: "accuracy", value: metrics.accuracy, direction: "higher_better" };
+    }
+    return { key: "", value: null, direction: "neutral" };
+  };
+
+  const trendForModel = (modelKey, currentMetrics) => {
+    const last = metricsHistory.at(-1)?.artifacts?.[modelKey]?.metrics;
+    const prev = metricsHistory.at(-2)?.artifacts?.[modelKey]?.metrics;
+    const current = metricValueForTrend(currentMetrics);
+    const previous = metricValueForTrend(prev ?? last);
+    if (!current.key || current.value == null || previous.value == null) {
+      return { symbol: "•", label: "No trend", className: "trend-flat" };
+    }
+    const delta = Number(current.value) - Number(previous.value);
+    if (Math.abs(delta) < 1e-9) {
+      return { symbol: "→", label: "Stable", className: "trend-flat" };
+    }
+    if (current.direction === "lower_better") {
+      return delta < 0
+        ? { symbol: "↓", label: "Improving", className: "trend-up" }
+        : { symbol: "↑", label: "Regressing", className: "trend-down" };
+    }
+    return delta > 0
+      ? { symbol: "↑", label: "Improving", className: "trend-up" }
+      : { symbol: "↓", label: "Regressing", className: "trend-down" };
+  };
 
   const handleCityClick = async (city) => {
     setSelectedCity(city);
@@ -94,7 +190,7 @@ export default function App() {
       const [yieldResp, classResp, forecastResp, recommendResp] = await Promise.all([
         postJson("/predict-yield", { features: baseFeatures }),
         postJson("/classify-yield", { features: baseFeatures }),
-        postJson("/forecast", { periods: 12 }),
+        postJson("/forecast", { periods: 12, context_features: baseFeatures }),
         postJson("/recommend", { ...baseFeatures })
       ]);
 
@@ -108,10 +204,13 @@ export default function App() {
       setResult({
         cropSuitabilityScore: yieldResp.crop_suitability_score ?? yieldResp.prediction,
         riskLevel: classResp.risk_level ?? classResp.prediction,
+        projectedSuitability: forecastResp.suitability_projection ?? null,
+        rainfallHistory: forecastResp.historical ?? [],
         forecast: forecastResp.forecast ?? [],
         recommendation: recommendResp,
         cluster: clusterResp
       });
+      await fetchModelHealth();
     } catch (err) {
       setError(err.message || "Unable to fetch data from backend.");
       setResult(null);
@@ -121,18 +220,34 @@ export default function App() {
   };
 
   const chartData = useMemo(() => {
+    const history = result?.rainfallHistory ?? [];
     const points = result?.forecast ?? [];
+    const historyLabels = history.map((p) => p.date);
+    const forecastLabels = points.map((p) => p.date);
+    const labels = [...historyLabels, ...forecastLabels];
+    const historyData = [...history.map((p) => p.rainfall), ...forecastLabels.map(() => null)];
+    const forecastData = [...historyLabels.map(() => null), ...points.map((p) => p.rainfall ?? p.prediction)];
     return {
-      labels: points.map((p) => p.date),
+      labels,
       datasets: [
         {
-          label: "Forecasted Yield",
-          data: points.map((p) => p.prediction),
-          borderColor: "#6ee7ff",
-          backgroundColor: "rgba(110,231,255,0.2)",
-          tension: 0.35,
+          label: "Historical Rainfall",
+          data: historyData,
+          borderColor: "#94a3b8",
+          backgroundColor: "rgba(148,163,184,0.15)",
+          tension: 0.2,
+          pointRadius: 1.5,
+          fill: false
+        },
+        {
+          label: "Forecast Rainfall",
+          data: forecastData,
+          borderColor: "#22d3ee",
+          backgroundColor: "rgba(34,211,238,0.2)",
+          tension: 0.3,
           pointRadius: 2,
-          fill: true
+          borderDash: [6, 3],
+          fill: false
         }
       ]
     };
@@ -146,7 +261,7 @@ export default function App() {
     },
     scales: {
       x: { ticks: { color: "#9ca3af" }, grid: { color: "rgba(255,255,255,0.08)" } },
-      y: { ticks: { color: "#9ca3af" }, grid: { color: "rgba(255,255,255,0.08)" } }
+      y: { ticks: { color: "#9ca3af" }, grid: { color: "rgba(255,255,255,0.08)" }, title: { display: true, text: "Rainfall", color: "#cbd5e1" } }
     }
   };
 
@@ -164,14 +279,14 @@ export default function App() {
           {!loading && error && <div className="error-box">{error}</div>}
 
           {!loading && !error && result && selectedCity && (
-            <div className="metrics">
+            <div className="metrics premium">
               <h2>{selectedCity.name}</h2>
               <div className="metric-grid">
-                <div className="metric-card">
+                <div className="metric-card score-card">
                   <span>Crop Suitability Score</span>
                   <strong>{Number(result.cropSuitabilityScore || 0).toFixed(2)}</strong>
                 </div>
-                <div className="metric-card">
+                <div className="metric-card risk-card">
                   <span>Risk Level</span>
                   <strong>{result.riskLevel || "N/A"}</strong>
                 </div>
@@ -181,14 +296,57 @@ export default function App() {
                 </div>
               </div>
 
+              {result.projectedSuitability && (
+                <div className="projection-box">
+                  <p>
+                    <strong>Projected next-month score:</strong>{" "}
+                    {Number(result.projectedSuitability.crop_suitability_score || 0).toFixed(2)}
+                  </p>
+                  <p>
+                    <strong>Projected risk:</strong> {result.projectedSuitability.risk_level || "N/A"}
+                  </p>
+                </div>
+              )}
+
               <div className="recommendation">
                 <h3>Recommendation</h3>
                 <p><strong>Best crop:</strong> {result.recommendation?.best_crop || "N/A"}</p>
                 <p>{result.recommendation?.fertilizer_suggestion || "No fertilizer suggestion."}</p>
               </div>
 
+              <div className="health-box">
+                <div className="health-header">
+                  <h3>Model Health</h3>
+                  <button className="refresh-btn" onClick={fetchModelHealth} type="button">
+                    Refresh
+                  </button>
+                </div>
+                {metricsRefreshedAt && (
+                  <p className="muted health-time">
+                    Last updated: {new Date(metricsRefreshedAt).toLocaleString()}
+                  </p>
+                )}
+                {!modelHealth && <p className="muted">Model metrics unavailable.</p>}
+                {modelHealth && (
+                  <>
+                    {Object.entries(modelHealth).map(([name, entry]) => (
+                      <div className="health-row" key={name}>
+                        <span>{name.replaceAll("_", " ")}</span>
+                        <strong className={`status-badge ${getStatusClass(entry)}`}>
+                          {getStatusLabel(entry)}
+                        </strong>
+                        <em>{metricText(entry?.metrics)}</em>
+                        <small className={`trend-chip ${trendForModel(name, entry?.metrics).className}`}>
+                          {trendForModel(name, entry?.metrics).symbol} {trendForModel(name, entry?.metrics).label}
+                        </small>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+
               <div className="chart-wrap">
-                <h3>12-Month Forecast</h3>
+                <h3>Rainfall Forecast</h3>
                 {result.forecast.length > 0 ? (
                   <div className="chart-container">
                     <Line data={chartData} options={chartOptions} />
