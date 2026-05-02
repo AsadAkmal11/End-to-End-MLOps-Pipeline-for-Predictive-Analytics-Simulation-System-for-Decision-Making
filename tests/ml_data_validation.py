@@ -15,7 +15,7 @@ if sys.version_info >= (3, 13):
 
 import pandas as pd
 from deepchecks.tabular import Dataset
-from deepchecks.tabular.checks.data_integrity import DataIntegrity
+from deepchecks.tabular.suites import data_integrity
 
 
 def run_data_integrity_check(csv_path: Path) -> None:
@@ -24,7 +24,7 @@ def run_data_integrity_check(csv_path: Path) -> None:
 
     df = pd.read_csv(csv_path)
     dataset = Dataset(df)
-    result = DataIntegrity().run(dataset)
+    result = data_integrity().run(dataset)
 
     # Fail CI if any check condition fails.
     if not result.passed_conditions():
